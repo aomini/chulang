@@ -50,6 +50,12 @@ const cursor = {
   // eg: on escape it should get back to here
   // [col, row]
   lastPos: [4, 0],
+  setBlockCursor() {
+    return process.stdout.write("\x1b[1 q");
+  },
+  setBarCursor() {
+    return process.stdout.write("\x1b[5 q");
+  },
   updateLastPos() {
     this.lastPos = [this.column, this.row];
   },
@@ -88,6 +94,11 @@ const mode = {
   onEscape() {
     this.normal = !this.normal;
     this.setFooterMode();
+    if (this.normal) {
+      cursor.setBlockCursor();
+    } else {
+      cursor.setBarCursor();
+    }
   },
 };
 
@@ -144,6 +155,7 @@ const commandSequence = {
   complete() {
     // just a test
     if (commandSequence.command === "q") {
+      cursor.setBlockCursor();
       process.exit(0);
     }
     this.isOn = false;
@@ -156,6 +168,7 @@ stdin.on("data", function (key) {
 
   // ctrl-c
   if (key === "\u0003") {
+    cursor.setBlockCursor();
     process.exit(0);
   }
   if (key === "\u001b") {
