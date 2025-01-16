@@ -231,6 +231,15 @@ const buffer = {
         buffer.currentColumn++;
         setCursor(buffer.currentColumn, buffer.currentRow);
       },
+      left() {
+        // If it's the start of the line
+        const previousCol = buffer.currentColumn - 1;
+        if (previousCol < buffer.restricted.cols.length) {
+          return false;
+        }
+        buffer.currentColumn--;
+        setCursor(buffer.currentColumn, buffer.currentRow);
+      },
     };
   },
   // Increment col count of the line
@@ -355,7 +364,8 @@ stdin.on("data", function (key) {
   } else if (normal && key === ":") {
     commandSequence.init();
   } else if (normal && key === "h") {
-    process.stdout.write("\x1b[D");
+    buffer.transition().left();
+    // process.stdout.write("\x1b[D");
   } else if (normal && key === "l") {
     // process.stdout.write("\x1b[C");
     buffer.transition().right();
