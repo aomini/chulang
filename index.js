@@ -26,8 +26,6 @@ clearScreen();
 // Use existing data
 // process.stdout.write(data);
 
-let lastToken = "";
-
 const rows = process.stdout.rows;
 const columns = process.stdout.columns;
 const maxNumberLength = rows.toString().length;
@@ -55,6 +53,12 @@ const cursor = {
   },
   setBarCursor() {
     return process.stdout.write("\x1b[5 q");
+  },
+  save() {
+    return process.stdout.write("\x1b[s");
+  },
+  restore() {
+    return process.stdout.write("\x1b[u");
   },
   updateLastPos() {
     this.lastPos = [this.column, this.row];
@@ -107,9 +111,19 @@ const setFooter = () => {
   // Rakesh <3
   const reservedColumns = 8;
 
+  // Set background color to footer
+  // New to add some gap between the mode text & bg
+  //
+  const maxLeftText = (mode.normalText + "<Mode>").length + 2;
+  for (let i = maxLeftText; i < columns; i++) {
+    setCursor(i, rows - 2);
+    process.stdout.write("\x1b[48;5;89m" + " " + `\x1b[0m`);
+  }
   const colPositionRight = columns - reservedColumns;
   setCursor(colPositionRight, rows - 2);
-  process.stdout.write("\x1b[1;35m" + "Rakesh \u2764" + `\x1b[0m`);
+  // Foreground color
+  // process.stdout.write("\x1b[1;35m" + "Rakesh \u2764" + `\x1b[0m`);
+  process.stdout.write("\x1b[48;5;89m" + "Rakesh \u2764" + `\x1b[0m`);
 
   mode.setFooterMode();
 };
@@ -143,23 +157,101 @@ setFooter();
 // Extra space at the end
 setCursor(maxNumberLength + 2, 0);
 
+const tty = {
+  write(input) {
+    process.stdout.write(input);
+  },
+};
+
+const buffer = {
+  // Current line the user is at
+  currentRow: 0,
+  // Column the user is at (default is 3, need to make dynamic once the line numbers are greater than 999)
+  currentColumn: 3,
+  // Restricted cols; users cant update
+  restricted: {
+    // 0 inclusive to 3 inclusive
+    cols: [0, 3],
+    // Last two rows; nth row is used as command-line & n-1 used as airline
+    rows: [rows, rows - 1],
+  },
+  // Track lines rows & cols filled
+  line: {
+    // Initial is empty, since there will be nothing to add
+  },
+};
+
+const editor = {
+  write: tty.write,
+  eraseLine() {
+    this.write("\x1b[0K");
+  },
+  eraseLineCursorLast() {
+    this.write("\x1b[2K");
+  },
+  // Returns if vim-like motions can be executed
+  isMotion() {
+    const { normal } = mode;
+    const { isOn } = commandSequence;
+    return normal && !isOn;
+  },
+};
+
 const commandSequence = {
   command: "",
   isOn: false,
+  timeout: null,
   init() {
     this.isOn = true;
+    this.onCommand({ init: true });
+    // Erase after the cursor is at command line
+    editor.eraseLine();
   },
   write(command) {
     this.command += command;
   },
   complete() {
-    // just a test
-    if (commandSequence.command === "q") {
-      cursor.setBlockCursor();
-      process.exit(0);
-    }
+    const currentCommand = this.command;
     this.isOn = false;
     this.command = "";
+    // just a test
+    if (currentCommand === "q") {
+      cursor.setBlockCursor();
+      process.exit(0);
+    } else {
+      this.onCommand({ failure: true });
+    }
+  },
+  // Displays error at the bottom of the screen
+  setError(error) {
+    editor.write(`\x1b[${rows}H\x1b[38;5;196m${error}\x1b[0m`);
+    cursor.restore();
+    this.timeout = setTimeout(() => {
+      /** \x1b means escape in hex, \033 octal & \u0001b in uni
+       * \[2k means clear line
+       * \[s save current cursor position
+       * \[u restore saved cursor position
+       */
+      editor.write(`\x1b[${rows}H\x1b[2K`);
+      cursor.restore();
+    }, 3000);
+  },
+  onCommand({ init = false, success = false, failure = false }) {
+    // process.stdout.write(`\x1b[s`);
+    if (init) {
+      if (this.timeout) clearTimeout(this.timeout);
+      cursor.save();
+      editor.write(`\x1b[${rows}H:`);
+    } else if (success) {
+      editor.write(`\x1b[${rows}H\x1b[2k`);
+    } else if (failure) {
+      this.setError("Command not found");
+      // process.stdout.write(`\x1b[u`);
+    } else {
+      this.setError(
+        "No command status sent, atleast send init, success or failure",
+      );
+    }
   },
 };
 
@@ -176,16 +268,13 @@ stdin.on("data", function (key) {
   }
   // if (key === "\u000D") {
   else if (key === "\r" || key === "\n") {
-    onReturn();
-    commandSequence.complete();
+    if (commandSequence.isOn) commandSequence.complete();
+    else onReturn();
     // In mac, backspace is read as del 127(\x7F) rather than \u0008 or \x08
   } else if (key === "\x7F") {
     backspace();
-  } else if (key === ":" && lastToken !== ":") {
-    lastToken = key;
+  } else if (normal && key === ":") {
     commandSequence.init();
-    const rows = process.stdout.rows;
-    process.stdout.write(`\x1b[${rows}H:`);
   } else if (normal && key === "h") {
     process.stdout.write("\x1b[D");
   } else if (normal && key === "l") {
@@ -194,7 +283,7 @@ stdin.on("data", function (key) {
     process.stdout.write("\x1b[B");
   } else if (normal && key === "k") {
     process.stdout.write("\x1b[A");
-  } else {
+  } else if (!normal || commandSequence.isOn) {
     if (commandSequence.isOn) commandSequence.write(key);
     process.stdout.write(key);
     cursor.onKeypress();
