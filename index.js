@@ -139,6 +139,7 @@ const onReturn = () => {
   // We are setting extra space after numbers so add +1 char
   setCursor(nextNum.length + 1, cursor.row);
   cursor.onEnter(nextNum.length + 1);
+  buffer.onLineBreak();
 };
 
 const backspace = () => {
@@ -163,21 +164,92 @@ const tty = {
   },
 };
 
+const initialRow = 0;
+const initialCol = 4;
 const buffer = {
-  // Current line the user is at
-  currentRow: 0,
-  // Column the user is at (default is 3, need to make dynamic once the line numbers are greater than 999)
-  currentColumn: 3,
+  currentRow: initialRow,
+  currentColumn: initialCol,
   // Restricted cols; users cant update
   restricted: {
-    // 0 inclusive to 3 inclusive
-    cols: [0, 3],
+    // Line numbers cols (TODO: dynamic left)
+    cols: [0, 1, 2, 3],
     // Last two rows; nth row is used as command-line & n-1 used as airline
     rows: [rows, rows - 1],
   },
-  // Track lines rows & cols filled
+  // Returns end of the line or last column of a line
+  getLineEnd(row) {
+    // TODO: Multiline left
+    const restrictedColumns = this.restricted.cols.length;
+    const rowCols = this.line[row].length;
+    if (rowCols > restrictedColumns) {
+      return this.line[row].length + restrictedColumns - 1;
+    } else return this.line[row].length + restrictedColumns + 1;
+  },
+  // Tracks row content
   line: {
     // Initial is empty, since there will be nothing to add
+    [initialRow]: "",
+  },
+  // Buffer moves
+  transition() {
+    const buffer = this;
+    return {
+      up() {
+        // First row
+        if (buffer.currentRow === 0) {
+          return;
+        }
+        const previousRow = parseInt(buffer.currentRow) - 1;
+
+        // check if previousRow has the same col available or not
+        // if yes just move with the current col value
+        // else get the line end
+        if (buffer.line[previousRow].length >= buffer.currentColumn) {
+          setCursor(buffer.currentColumn, previousRow);
+          // After move
+          buffer.currentRow = previousRow;
+        } else {
+          const col = buffer.getLineEnd(previousRow);
+          setCursor(col, previousRow);
+          // After move
+          buffer.currentRow = previousRow;
+          buffer.currentColumn = col;
+        }
+      },
+      right() {
+        // If it's the end of the line
+        const nextCol = buffer.currentColumn + 1;
+        if (
+          nextCol >
+          // 1 is the last char
+          buffer.line[buffer.currentRow].length +
+            buffer.restricted.cols.length -
+            1
+        ) {
+          return false;
+        }
+        buffer.currentColumn++;
+        setCursor(buffer.currentColumn, buffer.currentRow);
+      },
+    };
+  },
+  // Increment col count of the line
+  onAddChar(char = "") {
+    if (char) this.line[this.currentRow] += char;
+    else this.line[this.currentRow] = "";
+  },
+  // On line break, add row
+  onLineBreak() {
+    this.currentRow++;
+    this.onAddChar();
+    // console.log(this.line, columns, this.line[this.currentRow - 1].length);
+  },
+
+  // Different than editor.write & tty.write
+  // since, it tracks the currentRow, currentColumn & filled lines
+  write(char) {
+    this.onAddChar(char);
+    editor.write(char);
   },
 };
 
@@ -255,6 +327,13 @@ const commandSequence = {
   },
 };
 
+// Writes the command part
+const debug = {
+  print(char) {
+    process.stdout.write(char);
+  },
+};
+
 stdin.on("data", function (key) {
   const { normal } = mode;
 
@@ -278,14 +357,20 @@ stdin.on("data", function (key) {
   } else if (normal && key === "h") {
     process.stdout.write("\x1b[D");
   } else if (normal && key === "l") {
-    process.stdout.write("\x1b[C");
+    // process.stdout.write("\x1b[C");
+    buffer.transition().right();
   } else if (normal && key === "j") {
     process.stdout.write("\x1b[B");
   } else if (normal && key === "k") {
-    process.stdout.write("\x1b[A");
+    buffer.transition().up();
+    //process.stdout.write("\x1b[A");
   } else if (!normal || commandSequence.isOn) {
-    if (commandSequence.isOn) commandSequence.write(key);
-    process.stdout.write(key);
-    cursor.onKeypress();
+    if (commandSequence.isOn) {
+      commandSequence.write(key);
+      process.stdout.write(key);
+    } else buffer.write(key);
+
+    // console.log(buffer.line);
+    // cursor.onKeypress();
   }
 });
