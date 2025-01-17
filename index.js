@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const readline = require("readline");
 const stdin = process.stdin;
 
@@ -6,6 +7,10 @@ stdin.setRawMode(true);
 stdin.resume(true);
 
 stdin.setEncoding("utf8");
+
+const writeLog = (msg) => {
+  fs.appendFileSync("log.txt", JSON.stringify(msg, null, 2));
+};
 
 function clearScreen() {
   process.stdout.write("\x1b[2J\x1b[H"); // Clear the screen and move cursor to (0,0)
@@ -103,6 +108,15 @@ const mode = {
     } else {
       cursor.setBarCursor();
     }
+    const col =
+      (buffer.line[buffer.currentRow].length || 0) +
+      buffer.restricted.cols.length;
+    writeLog({
+      action: "Escape",
+      currentCol: col,
+      currentRow: buffer.currentRow,
+    });
+    setCursor(col, buffer.currentRow);
   },
 };
 
@@ -142,10 +156,6 @@ const onReturn = () => {
   buffer.onLineBreak();
 };
 
-const backspace = () => {
-  process.stdout.write("\u0008 \u0008");
-};
-
 /** Initial Set up */
 
 //
@@ -180,7 +190,17 @@ const buffer = {
   getLineEnd(row) {
     // TODO: Multiline left
     const restrictedColumns = this.restricted.cols.length;
-    const rowCols = this.line[row].length;
+    const rowCols = (this.line[row].length || 0) + restrictedColumns;
+    writeLog({
+      action: "EndLine",
+      restrictedColumns,
+      rowColsWithRestrictedCols: rowCols,
+      rowChar: this.line[row].length,
+    });
+    // empty
+    if (rowCols === restrictedColumns) {
+      return restrictedColumns;
+    }
     if (rowCols > restrictedColumns) {
       return this.line[row].length + restrictedColumns - 1;
     } else return this.line[row].length + restrictedColumns + 1;
@@ -200,11 +220,19 @@ const buffer = {
           return;
         }
         const previousRow = parseInt(buffer.currentRow) - 1;
-
+        writeLog({
+          action: "up",
+          ...buffer.line,
+          currentCol: buffer.currentColumn,
+          previousRowLength: buffer.line[previousRow].length,
+        });
         // check if previousRow has the same col available or not
         // if yes just move with the current col value
         // else get the line end
-        if (buffer.line[previousRow].length >= buffer.currentColumn) {
+        if (
+          buffer.line[previousRow].length + buffer.restricted.cols.length >
+          buffer.currentColumn
+        ) {
           setCursor(buffer.currentColumn, previousRow);
           // After move
           buffer.currentRow = previousRow;
@@ -213,6 +241,38 @@ const buffer = {
           setCursor(col, previousRow);
           // After move
           buffer.currentRow = previousRow;
+          buffer.currentColumn = col;
+        }
+      },
+      down() {
+        const nextRow = parseInt(buffer.currentRow) + 1;
+        const nextLine = buffer.line[nextRow];
+        writeLog({
+          action: "down",
+          ...buffer.line,
+          currentCol: buffer.currentColumn,
+          nextRowLength: buffer.line[nextRow]?.length,
+        });
+
+        // check last row exists
+        if (typeof nextLine === "undefined") {
+          return;
+        }
+        // check if nextRow has the same col available or not
+        // if yes just move with the current col value
+        // else get the line end
+        if (
+          nextLine.length + buffer.restricted.cols.length >
+          buffer.currentColumn
+        ) {
+          setCursor(buffer.currentColumn, nextRow);
+          // After move
+          buffer.currentRow = nextRow;
+        } else {
+          const col = buffer.getLineEnd(nextRow);
+          setCursor(col, nextRow);
+          // After move
+          buffer.currentRow = nextRow;
           buffer.currentColumn = col;
         }
       },
@@ -233,19 +293,39 @@ const buffer = {
       },
       left() {
         // If it's the start of the line
-        const previousCol = buffer.currentColumn - 1;
+        // Bug: on escape and h
+        const previousCol = buffer.line[buffer.currentRow].length - 1;
         if (previousCol < buffer.restricted.cols.length) {
           return false;
         }
         buffer.currentColumn--;
         setCursor(buffer.currentColumn, buffer.currentRow);
       },
+      backspace() {
+        writeLog({
+          action: "backspace",
+          // includes restricted cols as it starts with col restricted
+          currentLineCol: buffer.line[buffer.currentRow].length,
+          lineContent: buffer.line[buffer.currentRow],
+        });
+        const col = buffer.line[buffer.currentRow].length || 0;
+        // const currentCol = buffer.currentColumn - buffer.restricted.cols.length;
+        if (col) {
+          process.stdout.write("\u0008 \u0008");
+          buffer.currentColumn--;
+          buffer.line[buffer.currentRow] = buffer.line[buffer.currentRow].slice(
+            0,
+            -1,
+          );
+        }
+      },
     };
   },
   // Increment col count of the line
   onAddChar(char = "") {
-    if (char) this.line[this.currentRow] += char;
-    else this.line[this.currentRow] = "";
+    if (char) {
+      this.line[this.currentRow] += char;
+    } else this.line[this.currentRow] = "";
   },
   // On line break, add row
   onLineBreak() {
@@ -257,6 +337,7 @@ const buffer = {
   // Different than editor.write & tty.write
   // since, it tracks the currentRow, currentColumn & filled lines
   write(char) {
+    this.currentColumn++;
     this.onAddChar(char);
     editor.write(char);
   },
@@ -359,8 +440,8 @@ stdin.on("data", function (key) {
     if (commandSequence.isOn) commandSequence.complete();
     else onReturn();
     // In mac, backspace is read as del 127(\x7F) rather than \u0008 or \x08
-  } else if (key === "\x7F") {
-    backspace();
+  } else if (!normal && key === "\x7F") {
+    buffer.transition().backspace();
   } else if (normal && key === ":") {
     commandSequence.init();
   } else if (normal && key === "h") {
@@ -370,7 +451,8 @@ stdin.on("data", function (key) {
     // process.stdout.write("\x1b[C");
     buffer.transition().right();
   } else if (normal && key === "j") {
-    process.stdout.write("\x1b[B");
+    buffer.transition().down();
+    // process.stdout.write("\x1b[B");
   } else if (normal && key === "k") {
     buffer.transition().up();
     //process.stdout.write("\x1b[A");
